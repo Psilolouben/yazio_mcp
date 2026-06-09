@@ -98,7 +98,7 @@ async def ask_gemini(user_message: str) -> str:
 
     while True:
         response = await _get_gemini().aio.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-1.5-flash-latest",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system,
