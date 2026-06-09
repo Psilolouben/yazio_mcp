@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:developer.yazio.com)",
+      "WebSearch",
+      "WebFetch(domain:saganos.github.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python3:*)",
+      "Bash(grep -r \"api\\\\|auth\\\\|token\\\\|bearer\\\\|secret\\\\|key\\\\|endpoint\\\\|https://\" /Users/marky/Projects/yazio --include=*.py --include=*.txt --include=*.md)",
+      "Bash(pip3 install:*)",
+      "Bash(ls /opt/homebrew/bin/python*)",
+      "Read(//usr/local/bin/**)",
+      "Bash(pyenv versions:*)",
+      "Bash(brew list:*)",
+      "Bash(brew install:*)",
+      "Bash(python3.11 --version)",
+      "Bash(python3.11 -m venv /Users/marky/Projects/yazio/.venv)",
+      "Bash(/Users/marky/Projects/yazio/.venv/bin/pip install:*)",
+      "Bash(python3.11 -m venv /Users/marky/Projects/yazio/.venv --without-pip)",
+      "Bash(curl -sS https://bootstrap.pypa.io/get-pip.py)",
+      "Bash(/Users/marky/Projects/yazio/.venv/bin/python3.11)",
+      "Bash(python3.13 -m venv /Users/marky/Projects/yazio/.venv)",
+      "Bash(brew link:*)",
+      "Bash(python3.13 -m ensurepip)",
+      "Bash(uv --version)",
+      "Bash(curl -LsSf https://astral.sh/uv/install.sh)",
+      "Bash(sh)",
+      "Bash(~/.local/bin/uv init:*)",
+      "Bash(~/.local/bin/uv add:*)",
+      "Bash(~/.local/bin/uv run:*)"
+    ]
+  }
+}
