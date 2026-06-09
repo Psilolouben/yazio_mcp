@@ -1,243 +1,144 @@
 #!/usr/bin/env python3
 """
-Telegram bot — ask questions about your Strava training and Yazio nutrition.
-Claude answers using live data fetched via tool use.
+Telegram bot — routes questions through the Yazio MCP server.
+Uses Google Gemini as the LLM (free tier).
 
 Required environment variables:
     TELEGRAM_BOT_TOKEN      From @BotFather
-    ANTHROPIC_API_KEY       Your Anthropic API key
-    YAZIO_EMAIL             Your Yazio account email
-    YAZIO_PASSWORD          Your Yazio account password
+    GEMINI_API_KEY          From aistudio.google.com
 """
 
 import os
-import json
 import logging
-import requests
-from datetime import date, timedelta
+from datetime import date
 
-import anthropic
+from google import genai
+from google.genai import types
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
 logging.basicConfig(level=logging.INFO)
 
-# ── Yazio ─────────────────────────────────────────────────────────────────────
+MCP_URL = os.environ.get("MCP_URL", "https://yazio-mcp.onrender.com/mcp")
 
-_YAZIO_BASE     = "https://yzapi.yazio.com"
-_YAZIO_AUTH_URL = f"{_YAZIO_BASE}/v12/oauth/token"
-_YAZIO_API_URL  = f"{_YAZIO_BASE}/v15"
-_YAZIO_CLIENT_ID     = os.environ.get("YAZIO_CLIENT_ID",     "1_4hiybetvfksgw40o0sog4s884kwc840wwso8go4k8c04goo4c")
-_YAZIO_CLIENT_SECRET = os.environ.get("YAZIO_CLIENT_SECRET", "6rok2m65xuskgkgogw40wkkk8sw0osg84s8cggsc4woos4s8o")
-_MEAL_ORDER = {"breakfast": 0, "lunch": 1, "dinner": 2, "snack": 3}
+# ── Gemini ────────────────────────────────────────────────────────────────────
 
-_yazio_session: requests.Session | None = None
-_product_cache: dict = {}
+_gemini: genai.Client | None = None
 
 
-def _yazio_session_get() -> requests.Session:
-    global _yazio_session
-    if _yazio_session is None:
-        resp = requests.post(_YAZIO_AUTH_URL, json={
-            "client_id":     _YAZIO_CLIENT_ID,
-            "client_secret": _YAZIO_CLIENT_SECRET,
-            "username":      os.environ["YAZIO_EMAIL"],
-            "password":      os.environ["YAZIO_PASSWORD"],
-            "grant_type":    "password",
-        }, timeout=15)
-        resp.raise_for_status()
-        token = resp.json()["access_token"]
-        s = requests.Session()
-        s.headers.update({"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-        _yazio_session = s
-    return _yazio_session
+def _get_gemini() -> genai.Client:
+    global _gemini
+    if _gemini is None:
+        _gemini = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    return _gemini
 
 
-def _yazio_product(product_id: str) -> dict:
-    if product_id not in _product_cache:
-        r = _yazio_session_get().get(f"{_YAZIO_API_URL}/products/{product_id}", timeout=15)
-        r.raise_for_status()
-        _product_cache[product_id] = r.json()
-    return _product_cache[product_id]
+# ── MCP client ────────────────────────────────────────────────────────────────
+
+_mcp_tools: list[dict] | None = None
 
 
-def _yazio_recipe(recipe_id: str) -> dict:
-    key = f"recipe_{recipe_id}"
-    if key not in _product_cache:
-        r = _yazio_session_get().get(f"{_YAZIO_API_URL}/recipes/{recipe_id}", timeout=15)
-        r.raise_for_status()
-        _product_cache[key] = r.json()
-    return _product_cache[key]
+async def _list_tools() -> list[dict]:
+    async with streamablehttp_client(MCP_URL) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.list_tools()
+            return [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.inputSchema,
+                }
+                for t in result.tools
+            ]
 
 
-def _yazio_day(d: date) -> list[dict]:
-    resp = _yazio_session_get().get(
-        f"{_YAZIO_API_URL}/user/consumed-items",
-        params={"date": d.isoformat()}, timeout=15
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    rows = []
-    for item in data.get("products", []):
-        amount  = float(item.get("amount", 0))
-        product = _yazio_product(item["product_id"])
-        n = product.get("nutrients", {})
-        rows.append({
-            "date": d.isoformat(), "meal": item.get("daytime", "unknown"),
-            "food": product.get("name", item["product_id"]),
-            "kcal": round(n.get("energy.energy", 0) * amount, 1),
-            "carbs_g": round(n.get("nutrient.carb", 0) * amount, 1),
-            "protein_g": round(n.get("nutrient.protein", 0) * amount, 1),
-            "fat_g": round(n.get("nutrient.fat", 0) * amount, 1),
-        })
-    for item in data.get("recipe_portions", []):
-        count  = float(item.get("portion_count", 1))
-        recipe = _yazio_recipe(item["recipe_id"])
-        n = recipe.get("nutrients", {})
-        rows.append({
-            "date": d.isoformat(), "meal": item.get("daytime", "unknown"),
-            "food": f"{recipe.get('name', item['recipe_id'])} (recipe)",
-            "kcal": round(n.get("energy.energy", 0) * count, 1),
-            "carbs_g": round(n.get("nutrient.carb", 0) * count, 1),
-            "protein_g": round(n.get("nutrient.protein", 0) * count, 1),
-            "fat_g": round(n.get("nutrient.fat", 0) * count, 1),
-        })
-    rows.sort(key=lambda r: _MEAL_ORDER.get(r["meal"], 99))
-    return rows
+async def _call_tool(name: str, inputs: dict) -> str:
+    async with streamablehttp_client(MCP_URL) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(name, inputs)
+            return result.content[0].text if result.content else "{}"
 
 
-def yazio_today() -> list[dict]:
-    return _yazio_day(date.today())
+async def get_tools() -> list[dict]:
+    global _mcp_tools
+    if _mcp_tools is None:
+        _mcp_tools = await _list_tools()
+    return _mcp_tools
 
 
-def yazio_date(date_str: str) -> list[dict]:
-    return _yazio_day(date.fromisoformat(date_str))
+def _to_gemini_tools(mcp_tools: list[dict]) -> list[types.Tool]:
+    declarations = [
+        types.FunctionDeclaration(
+            name=t["name"],
+            description=t["description"],
+            parameters=t["input_schema"],
+        )
+        for t in mcp_tools
+    ]
+    return [types.Tool(function_declarations=declarations)]
 
 
-def yazio_summary(days: int = 7) -> list[dict]:
-    today = date.today()
-    out = []
-    for i in range(days - 1, -1, -1):
-        d = today - timedelta(days=i)
-        rows = _yazio_day(d)
-        out.append({
-            "date":      d.isoformat(),
-            "kcal":      round(sum(r["kcal"]      for r in rows), 1),
-            "carbs_g":   round(sum(r["carbs_g"]   for r in rows), 1),
-            "protein_g": round(sum(r["protein_g"] for r in rows), 1),
-            "fat_g":     round(sum(r["fat_g"]     for r in rows), 1),
-            "items":     len(rows),
-        })
-    return out
+# ── LLM loop ──────────────────────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """You are a personal nutrition assistant.
+You have access to the user's Yazio nutrition logs via tools.
+Answer concisely. Today's date is {today}."""
 
 
-# ── Tool definitions for Claude ───────────────────────────────────────────────
-
-TOOLS = [
-    {
-        "name": "get_today_meals",
-        "description": "Get all meals logged in Yazio for today.",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "get_meals_for_date",
-        "description": "Get all meals logged in Yazio for a specific date.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "date": {"type": "string", "description": "Date in YYYY-MM-DD format"}
-            },
-            "required": ["date"],
-        },
-    },
-    {
-        "name": "get_nutrition_summary",
-        "description": "Get a daily nutrition summary (calories and macros) for the last N days.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "days": {"type": "integer", "description": "Number of past days (default 7)"}
-            },
-            "required": [],
-        },
-    },
-]
-
-
-def dispatch_tool(name: str, inputs: dict) -> str:
-    try:
-        if name == "get_today_meals":
-            return json.dumps(yazio_today())
-        elif name == "get_meals_for_date":
-            return json.dumps(yazio_date(inputs["date"]))
-        elif name == "get_nutrition_summary":
-            return json.dumps(yazio_summary(inputs.get("days", 7)))
-        else:
-            return json.dumps({"error": f"Unknown tool: {name}"})
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
-# ── Claude ────────────────────────────────────────────────────────────────────
-
-_anthropic = None
-
-
-def _get_anthropic() -> anthropic.Anthropic:
-    global _anthropic
-    if _anthropic is None:
-        _anthropic = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    return _anthropic
-
-SYSTEM_PROMPT = """You are a personal fitness and nutrition assistant.
-You have access to the user's Strava training data and Yazio nutrition logs.
-Answer questions concisely. Use tools to fetch data when needed.
-Today's date is {today}."""
-
-
-def ask_claude(user_message: str) -> str:
-    messages = [{"role": "user", "content": user_message}]
+async def ask_gemini(user_message: str) -> str:
+    mcp_tools = await get_tools()
+    gemini_tools = _to_gemini_tools(mcp_tools)
     system = SYSTEM_PROMPT.format(today=date.today().isoformat())
 
+    contents = [types.Content(role="user", parts=[types.Part(text=user_message)])]
+
     while True:
-        response = _get_anthropic().messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            system=system,
-            tools=TOOLS,
-            messages=messages,
+        response = await _get_gemini().aio.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                tools=gemini_tools,
+            ),
         )
 
-        if response.stop_reason == "tool_use":
-            # Add assistant's response to messages
-            messages.append({"role": "assistant", "content": response.content})
-            # Process all tool calls
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = dispatch_tool(block.name, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                    })
-            messages.append({"role": "user", "content": tool_results})
+        candidate = response.candidates[0]
+        contents.append(candidate.content)
+
+        function_calls = [p for p in candidate.content.parts if p.function_call]
+        if function_calls:
+            tool_responses = []
+            for part in function_calls:
+                fc = part.function_call
+                result = await _call_tool(fc.name, dict(fc.args))
+                tool_responses.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response={"result": result},
+                        )
+                    )
+                )
+            contents.append(types.Content(role="user", parts=tool_responses))
         else:
-            # Final text response
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
+            for part in candidate.content.parts:
+                if part.text:
+                    return part.text
             return "Sorry, I couldn't generate a response."
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
     await update.message.chat.send_action("typing")
     try:
-        reply = ask_claude(user_text)
+        reply = await ask_gemini(update.message.text)
     except Exception as e:
+        logging.exception("Error handling message")
         reply = f"Error: {e}"
     await update.message.reply_text(reply)
 
