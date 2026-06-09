@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 Telegram bot — routes questions through the Yazio MCP server.
-Uses Google Gemini as the LLM (free tier).
+Uses Groq as the LLM (free tier).
 
 Required environment variables:
     TELEGRAM_BOT_TOKEN      From @BotFather
-    GEMINI_API_KEY          From aistudio.google.com
+    GROQ_API_KEY            From console.groq.com
 """
 
 import os
+import json
 import logging
 from datetime import date
 
-from google import genai
-from google.genai import types
+from groq import AsyncGroq
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from mcp import ClientSession
@@ -22,17 +22,18 @@ from mcp.client.streamable_http import streamablehttp_client
 logging.basicConfig(level=logging.INFO)
 
 MCP_URL = os.environ.get("MCP_URL", "https://yazio-mcp.onrender.com/mcp")
+MODEL   = "llama-3.3-70b-versatile"
 
-# ── Gemini ────────────────────────────────────────────────────────────────────
+# ── Groq ──────────────────────────────────────────────────────────────────────
 
-_gemini: genai.Client | None = None
+_groq: AsyncGroq | None = None
 
 
-def _get_gemini() -> genai.Client:
-    global _gemini
-    if _gemini is None:
-        _gemini = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    return _gemini
+def _get_groq() -> AsyncGroq:
+    global _groq
+    if _groq is None:
+        _groq = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
+    return _groq
 
 
 # ── MCP client ────────────────────────────────────────────────────────────────
@@ -70,16 +71,18 @@ async def get_tools() -> list[dict]:
     return _mcp_tools
 
 
-def _to_gemini_tools(mcp_tools: list[dict]) -> list[types.Tool]:
-    declarations = [
-        types.FunctionDeclaration(
-            name=t["name"],
-            description=t["description"],
-            parameters=t["input_schema"],
-        )
+def _to_groq_tools(mcp_tools: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            },
+        }
         for t in mcp_tools
     ]
-    return [types.Tool(function_declarations=declarations)]
 
 
 # ── LLM loop ──────────────────────────────────────────────────────────────────
@@ -89,46 +92,56 @@ You have access to the user's Yazio nutrition logs via tools.
 Answer concisely. Today's date is {today}."""
 
 
-async def ask_gemini(user_message: str) -> str:
+async def ask_groq(user_message: str) -> str:
     mcp_tools = await get_tools()
-    gemini_tools = _to_gemini_tools(mcp_tools)
+    groq_tools = _to_groq_tools(mcp_tools)
     system = SYSTEM_PROMPT.format(today=date.today().isoformat())
 
-    contents = [types.Content(role="user", parts=[types.Part(text=user_message)])]
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user",   "content": user_message},
+    ]
 
     while True:
-        response = await _get_gemini().aio.models.generate_content(
-            model="gemini-2.0-flash-lite",
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                tools=gemini_tools,
-            ),
+        response = await _get_groq().chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            tools=groq_tools,
+            tool_choice="auto",
         )
 
-        candidate = response.candidates[0]
-        contents.append(candidate.content)
+        msg = response.choices[0].message
 
-        function_calls = [p for p in candidate.content.parts if p.function_call]
-        if function_calls:
-            tool_responses = []
-            for part in function_calls:
-                fc = part.function_call
-                result = await _call_tool(fc.name, dict(fc.args))
-                tool_responses.append(
-                    types.Part(
-                        function_response=types.FunctionResponse(
-                            name=fc.name,
-                            response={"result": result},
-                        )
-                    )
+        # Append assistant turn as a dict
+        messages.append({
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in (msg.tool_calls or [])
+            ] or None,
+        })
+
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                result = await _call_tool(
+                    tc.function.name,
+                    json.loads(tc.function.arguments),
                 )
-            contents.append(types.Content(role="user", parts=tool_responses))
+                messages.append({
+                    "role":         "tool",
+                    "tool_call_id": tc.id,
+                    "content":      result,
+                })
         else:
-            for part in candidate.content.parts:
-                if part.text:
-                    return part.text
-            return "Sorry, I couldn't generate a response."
+            return msg.content or "Sorry, I couldn't generate a response."
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -136,7 +149,7 @@ async def ask_gemini(user_message: str) -> str:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action("typing")
     try:
-        reply = await ask_gemini(update.message.text)
+        reply = await ask_groq(update.message.text)
     except Exception as e:
         logging.exception("Error handling message")
         reply = f"Error: {e}"
