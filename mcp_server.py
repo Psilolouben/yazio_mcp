@@ -239,4 +239,6 @@ def get_today_meals() -> list[dict]:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
