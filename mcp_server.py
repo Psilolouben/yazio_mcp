@@ -35,6 +35,7 @@ except ImportError:
 
 try:
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
 except ImportError:
     sys.exit("Missing dependency: pip install mcp")
 
@@ -153,7 +154,12 @@ def _process_day(day: date) -> list[dict]:
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
-mcp = FastMCP("yazio")
+_render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+_security = TransportSecuritySettings(
+    allowed_hosts=[_render_host, f"{_render_host}:443", "localhost", "127.0.0.1"]
+) if _render_host else None
+
+mcp = FastMCP("yazio", transport_security=_security)
 
 
 @mcp.tool()
@@ -240,13 +246,9 @@ def get_today_meals() -> list[dict]:
 
 if __name__ == "__main__":
     if os.environ.get("RENDER"):
-        # Hosted on Render — streamable HTTP transport (modern MCP)
-        import uvicorn
-        import asyncio
+        import uvicorn, asyncio
         port = int(os.environ.get("PORT", 8000))
         config = uvicorn.Config(mcp.streamable_http_app(), host="0.0.0.0", port=port, log_level="info")
-        server = uvicorn.Server(config)
-        asyncio.run(server.serve())
+        asyncio.run(uvicorn.Server(config).serve())
     else:
-        # Local — stdio mode for Claude Desktop / Claude Code
         mcp.run()
