@@ -246,7 +246,11 @@ def get_today_meals() -> list[dict]:
 
 if __name__ == "__main__":
     if os.environ.get("RENDER"):
-        import uvicorn, asyncio
+        import uvicorn, asyncio, threading
+        # Start Telegram bot in a background thread if token is configured
+        if os.environ.get("TELEGRAM_BOT_TOKEN"):
+            from telegram_bot import main as bot_main
+            threading.Thread(target=bot_main, daemon=True, name="telegram-bot").start()
         port = int(os.environ.get("PORT", 8000))
         config = uvicorn.Config(mcp.streamable_http_app(), host="0.0.0.0", port=port, log_level="info")
         asyncio.run(uvicorn.Server(config).serve())
