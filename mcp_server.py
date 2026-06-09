@@ -240,11 +240,11 @@ def get_today_meals() -> list[dict]:
 
 if __name__ == "__main__":
     if os.environ.get("RENDER"):
-        # Hosted on Render — SSE/HTTP mode
+        # Hosted on Render — streamable HTTP transport (modern MCP)
         import uvicorn
         import asyncio
         port = int(os.environ.get("PORT", 8000))
-        config = uvicorn.Config(mcp.sse_app(), host="0.0.0.0", port=port, log_level="info")
+        config = uvicorn.Config(mcp.streamable_http_app(), host="0.0.0.0", port=port, log_level="info")
         server = uvicorn.Server(config)
         asyncio.run(server.serve())
     else:
