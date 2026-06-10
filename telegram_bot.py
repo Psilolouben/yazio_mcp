@@ -22,7 +22,7 @@ from mcp.client.streamable_http import streamablehttp_client
 logging.basicConfig(level=logging.INFO)
 
 MCP_URL = os.environ.get("MCP_URL", "https://yazio-mcp.onrender.com/mcp")
-MODEL   = "llama3-groq-70b-8192-tool-use-preview"
+MODEL   = "llama-3.1-70b-versatile"
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 
@@ -71,6 +71,16 @@ async def get_tools() -> list[dict]:
     return _mcp_tools
 
 
+def _clean_schema(schema: dict) -> dict:
+    """Keep only fields Groq understands; strip JSON Schema extras."""
+    out = {"type": schema.get("type", "object")}
+    if "properties" in schema:
+        out["properties"] = schema["properties"]
+    if "required" in schema:
+        out["required"] = schema["required"]
+    return out
+
+
 def _to_groq_tools(mcp_tools: list[dict]) -> list[dict]:
     return [
         {
@@ -78,7 +88,7 @@ def _to_groq_tools(mcp_tools: list[dict]) -> list[dict]:
             "function": {
                 "name": t["name"],
                 "description": t["description"],
-                "parameters": t["input_schema"],
+                "parameters": _clean_schema(t["input_schema"]),
             },
         }
         for t in mcp_tools
