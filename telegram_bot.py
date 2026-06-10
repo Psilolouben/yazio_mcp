@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Telegram bot — routes questions through the Yazio MCP server.
-Uses Groq as the LLM (free tier).
+Telegram bot — fetches Yazio data from the MCP server and answers via Groq.
 
 Required environment variables:
     TELEGRAM_BOT_TOKEN      From @BotFather
     GROQ_API_KEY            From console.groq.com
 """
 
+import asyncio
 import os
-import json
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from groq import AsyncGroq
 from telegram import Update
@@ -38,24 +37,6 @@ def _get_groq() -> AsyncGroq:
 
 # ── MCP client ────────────────────────────────────────────────────────────────
 
-_mcp_tools: list[dict] | None = None
-
-
-async def _list_tools() -> list[dict]:
-    async with streamablehttp_client(MCP_URL) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.list_tools()
-            return [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.inputSchema,
-                }
-                for t in result.tools
-            ]
-
-
 async def _call_tool(name: str, inputs: dict) -> str:
     async with streamablehttp_client(MCP_URL) as (read, write, _):
         async with ClientSession(read, write) as session:
@@ -64,94 +45,40 @@ async def _call_tool(name: str, inputs: dict) -> str:
             return result.content[0].text if result.content else "{}"
 
 
-async def get_tools() -> list[dict]:
-    global _mcp_tools
-    if _mcp_tools is None:
-        _mcp_tools = await _list_tools()
-    return _mcp_tools
+async def _fetch_context() -> str:
+    """Pre-fetch the last 7 days of meals and daily summaries."""
+    today     = date.today()
+    week_ago  = (today - timedelta(days=6)).isoformat()
+    meals, summary = await asyncio.gather(
+        _call_tool("get_meals_for_range", {"start_date": week_ago, "end_date": today.isoformat()}),
+        _call_tool("get_daily_summary",   {"days": 7}),
+    )
+    return f"Daily summaries (last 7 days):\n{summary}\n\nDetailed meals (last 7 days):\n{meals}"
 
 
-def _clean_schema(schema: dict) -> dict:
-    """Keep only fields Groq understands; strip JSON Schema extras."""
-    out = {"type": schema.get("type", "object")}
-    if "properties" in schema:
-        out["properties"] = schema["properties"]
-    if "required" in schema:
-        out["required"] = schema["required"]
-    return out
-
-
-def _to_groq_tools(mcp_tools: list[dict]) -> list[dict]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": _clean_schema(t["input_schema"]),
-            },
-        }
-        for t in mcp_tools
-    ]
-
-
-# ── LLM loop ──────────────────────────────────────────────────────────────────
+# ── LLM ───────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a personal nutrition assistant.
-You have access to the user's Yazio nutrition logs via tools.
-Answer concisely. Today's date is {today}."""
+Answer the user's question using only the data below. Be concise.
+Today's date is {today}.
+
+--- NUTRITION DATA ---
+{data}
+---------------------"""
 
 
 async def ask_groq(user_message: str) -> str:
-    mcp_tools = await get_tools()
-    groq_tools = _to_groq_tools(mcp_tools)
-    system = SYSTEM_PROMPT.format(today=date.today().isoformat())
+    context = await _fetch_context()
+    system  = SYSTEM_PROMPT.format(today=date.today().isoformat(), data=context)
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user",   "content": user_message},
-    ]
-
-    while True:
-        response = await _get_groq().chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=groq_tools,
-            tool_choice="auto",
-        )
-
-        msg = response.choices[0].message
-
-        # Append assistant turn as a dict
-        messages.append({
-            "role": "assistant",
-            "content": msg.content,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in (msg.tool_calls or [])
-            ] or None,
-        })
-
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                result = await _call_tool(
-                    tc.function.name,
-                    json.loads(tc.function.arguments),
-                )
-                messages.append({
-                    "role":         "tool",
-                    "tool_call_id": tc.id,
-                    "content":      result,
-                })
-        else:
-            return msg.content or "Sorry, I couldn't generate a response."
+    response = await _get_groq().chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_message},
+        ],
+    )
+    return response.choices[0].message.content or "Sorry, I couldn't generate a response."
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
