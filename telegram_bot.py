@@ -7,7 +7,6 @@ Required environment variables:
     GROQ_API_KEY            From console.groq.com
 """
 
-import asyncio
 import os
 import logging
 from datetime import date, timedelta
@@ -45,20 +44,63 @@ async def _call_tool(name: str, inputs: dict) -> str:
             return result.content[0].text if result.content else "{}"
 
 
-async def _fetch_context() -> str:
-    """Pre-fetch the last 7 days of meals and daily summaries."""
-    today     = date.today()
-    week_ago  = (today - timedelta(days=6)).isoformat()
-    meals, summary = await asyncio.gather(
-        _call_tool("get_meals_for_range", {"start_date": week_ago, "end_date": today.isoformat()}),
-        _call_tool("get_daily_summary",   {"days": 7}),
+# ── Date extraction ───────────────────────────────────────────────────────────
+
+DATE_EXTRACT_PROMPT = """Extract the date or date range the user is asking about.
+Today is {today}.
+
+Reply with EXACTLY one of:
+- TODAY
+- YESTERDAY
+- DATE:YYYY-MM-DD
+- RANGE:YYYY-MM-DD:YYYY-MM-DD
+- UNCLEAR
+
+No explanation, just the token."""
+
+
+async def _extract_date(user_message: str) -> str:
+    today = date.today().isoformat()
+    response = await _get_groq().chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": DATE_EXTRACT_PROMPT.format(today=today)},
+            {"role": "user",   "content": user_message},
+        ],
+        max_tokens=20,
     )
-    return f"Daily summaries (last 7 days):\n{summary}\n\nDetailed meals (last 7 days):\n{meals}"
+    return response.choices[0].message.content.strip()
 
 
-# ── LLM ───────────────────────────────────────────────────────────────────────
+async def _fetch_for_token(token: str) -> str:
+    today = date.today()
 
-SYSTEM_PROMPT = """You are a personal nutrition assistant.
+    if token == "TODAY":
+        data = await _call_tool("get_meals_for_date", {"date": today.isoformat()})
+        return f"Meals for {today.isoformat()}:\n{data}"
+
+    if token == "YESTERDAY":
+        yesterday = (today - timedelta(days=1)).isoformat()
+        data = await _call_tool("get_meals_for_date", {"date": yesterday})
+        return f"Meals for {yesterday}:\n{data}"
+
+    if token.startswith("DATE:"):
+        d = token[5:]
+        data = await _call_tool("get_meals_for_date", {"date": d})
+        return f"Meals for {d}:\n{data}"
+
+    if token.startswith("RANGE:"):
+        _, start, end = token.split(":")
+        data = await _call_tool("get_meals_for_range", {"start_date": start, "end_date": end})
+        summary = await _call_tool("get_daily_summary", {"days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1})
+        return f"Meals from {start} to {end}:\n{data}\n\nDaily summaries:\n{summary}"
+
+    return ""
+
+
+# ── Answer ────────────────────────────────────────────────────────────────────
+
+ANSWER_PROMPT = """You are a personal nutrition assistant.
 Answer the user's question using only the data below. Be concise.
 Today's date is {today}.
 
@@ -68,13 +110,18 @@ Today's date is {today}.
 
 
 async def ask_groq(user_message: str) -> str:
-    context = await _fetch_context()
-    system  = SYSTEM_PROMPT.format(today=date.today().isoformat(), data=context)
+    token = await _extract_date(user_message)
+    logging.info("Date token: %s", token)
+
+    if token == "UNCLEAR":
+        return "Which date or date range are you asking about? You can say things like 'yesterday', 'June 10', or 'June 5 to June 10'."
+
+    data = await _fetch_for_token(token)
 
     response = await _get_groq().chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": system},
+            {"role": "system", "content": ANSWER_PROMPT.format(today=date.today().isoformat(), data=data)},
             {"role": "user",   "content": user_message},
         ],
     )
