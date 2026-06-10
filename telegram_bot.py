@@ -22,7 +22,7 @@ from mcp.client.streamable_http import streamablehttp_client
 logging.basicConfig(level=logging.INFO)
 
 MCP_URL = os.environ.get("MCP_URL", "https://yazio-mcp.onrender.com/mcp")
-MODEL   = "llama-3.3-70b-versatile"
+MODEL   = "llama3-groq-70b-8192-tool-use-preview"
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 
