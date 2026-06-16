@@ -59,7 +59,23 @@ Reply with EXACTLY one token:
 No explanation, just the token."""
 
 
+_SCHEDULE_KEYWORDS = [
+    # English
+    "schedule", "plan", "option", "propose", "suggest", "recommend",
+    "what should i", "what to eat", "what can i eat", "what do i eat",
+    "for dinner", "for lunch", "for breakfast", "dinner tonight", "lunch today",
+    "recipe",
+    # Greek
+    "πλάνο", "πρόγραμμα", "επιλογή", "πρωινό", "μεσημεριανό", "βραδινό",
+    "τι να φάω", "τι να τρώω", "τι έχω", "συνταγή", "πρόταση",
+]
+
+
 async def _classify(user_message: str) -> str:
+    msg = user_message.lower()
+    if any(kw in msg for kw in _SCHEDULE_KEYWORDS):
+        return "SCHEDULE"
+
     today = date.today().isoformat()
     response = await _get_groq().chat.completions.create(
         model=MODEL,
