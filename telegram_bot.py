@@ -46,28 +46,28 @@ async def _call_tool(name: str, inputs: dict) -> str:
 
 # ── Date extraction ───────────────────────────────────────────────────────────
 
-DATE_EXTRACT_PROMPT = """Extract the date or date range the user is asking about.
-Today is {today}.
+CLASSIFY_PROMPT = """Classify the user's nutrition question. Today is {today}.
 
-Reply with EXACTLY one of:
-- TODAY
-- YESTERDAY
-- DATE:YYYY-MM-DD
-- RANGE:YYYY-MM-DD:YYYY-MM-DD
-- UNCLEAR
+Reply with EXACTLY one token:
+- TODAY                            → asking about today's food log
+- YESTERDAY                        → asking about yesterday's food log
+- DATE:YYYY-MM-DD                  → asking about a specific logged date
+- RANGE:YYYY-MM-DD:YYYY-MM-DD      → asking about a logged date range
+- SCHEDULE                         → asking about the diet plan / schedule (what to eat, meal options, recipes, "what should I have for dinner/lunch/breakfast", "what are my options", anything about the plan)
+- UNCLEAR                          → genuinely cannot determine
 
 No explanation, just the token."""
 
 
-async def _extract_date(user_message: str) -> str:
+async def _classify(user_message: str) -> str:
     today = date.today().isoformat()
     response = await _get_groq().chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": DATE_EXTRACT_PROMPT.format(today=today)},
+            {"role": "system", "content": CLASSIFY_PROMPT.format(today=today)},
             {"role": "user",   "content": user_message},
         ],
-        max_tokens=20,
+        max_tokens=25,
     )
     return response.choices[0].message.content.strip()
 
@@ -95,12 +95,16 @@ async def _fetch_for_token(token: str) -> str:
         summary = await _call_tool("get_daily_summary", {"days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1})
         return f"Meals from {start} to {end}:\n{data}\n\nDaily summaries:\n{summary}"
 
+    if token == "SCHEDULE":
+        data = await _call_tool("get_diet_schedule", {})
+        return f"Diet schedule data:\n{data}"
+
     return ""
 
 
 # ── Answer ────────────────────────────────────────────────────────────────────
 
-ANSWER_PROMPT = """You are a personal nutrition assistant.
+FOOD_LOG_PROMPT = """You are a personal nutrition assistant.
 Answer the user's question using only the data below. Be concise.
 Today's date is {today}.
 
@@ -108,20 +112,33 @@ Today's date is {today}.
 {data}
 ---------------------"""
 
+SCHEDULE_PROMPT = """You are a personal nutrition assistant helping with a structured diet plan.
+The plan has two daily options (Επιλογή 1 and Επιλογή 2). Options are PAIRED:
+if the user ate from Option 1 at one meal, their other meals that day are also from Option 1.
+
+Use the schedule data below to answer the user's question.
+Be specific: name the exact foods and quantities from the plan.
+Today's date is {today}.
+
+--- DIET SCHEDULE ---
+{data}
+--------------------"""
+
 
 async def ask_groq(user_message: str) -> str:
-    token = await _extract_date(user_message)
-    logging.info("Date token: %s", token)
+    token = await _classify(user_message)
+    logging.info("Classification token: %s", token)
 
     if token == "UNCLEAR":
-        return "Which date or date range are you asking about? You can say things like 'yesterday', 'June 10', or 'June 5 to June 10'."
+        return "I'm not sure what you're asking about. Try asking about a specific date (e.g. 'what did I eat yesterday?') or your diet plan (e.g. 'what should I have for dinner?')."
 
     data = await _fetch_for_token(token)
+    prompt = SCHEDULE_PROMPT if token == "SCHEDULE" else FOOD_LOG_PROMPT
 
     response = await _get_groq().chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": ANSWER_PROMPT.format(today=date.today().isoformat(), data=data)},
+            {"role": "system", "content": prompt.format(today=date.today().isoformat(), data=data)},
             {"role": "user",   "content": user_message},
         ],
     )

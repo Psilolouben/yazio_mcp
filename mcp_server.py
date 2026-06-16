@@ -234,6 +234,50 @@ def get_daily_summary(days: int = 7) -> list[dict]:
 
 
 @mcp.tool()
+def get_diet_schedule() -> dict:
+    """
+    Return all diet plan schedules and companion recipes from the diet_plans/ directory.
+
+    Each plan PDF contains a weekly schedule with 2 meal options (Επιλογή 1 / Επιλογή 2),
+    each covering breakfast (Πρωινό), lunch (Μεσηµεριανό) and dinner (Βραδινό).
+    Options are paired: if the user ate from Option 1 at lunch, dinner is also Option 1.
+
+    Use this tool to answer questions like:
+    - "I had revythia for lunch, what should I have for dinner?"
+    - "What are my breakfast options this week?"
+    - "Show me the full schedule"
+
+    Returns:
+        plans: list of {filename, content} — diet plan PDFs, newest first
+        recipes: list of {filename, content} — companion recipe PDFs
+    """
+    import pdfplumber
+
+    diet_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diet_plans")
+    if not os.path.exists(diet_dir):
+        return {"plans": [], "recipes": [], "error": "diet_plans/ directory not found"}
+
+    plans, recipes = [], []
+    for fname in sorted(os.listdir(diet_dir), reverse=True):
+        if not fname.endswith(".pdf"):
+            continue
+        path = os.path.join(diet_dir, fname)
+        try:
+            with pdfplumber.open(path) as pdf:
+                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        except Exception as e:
+            text = f"[Error reading {fname}: {e}]"
+
+        entry = {"filename": fname, "content": text}
+        if fname.startswith("plano"):
+            plans.append(entry)
+        else:
+            recipes.append(entry)
+
+    return {"plans": plans, "recipes": recipes}
+
+
+@mcp.tool()
 def get_today_meals() -> list[dict]:
     """
     Return every meal item logged in YAZIO for today.

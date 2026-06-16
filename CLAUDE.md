@@ -66,6 +66,21 @@ The Telegram bot is only started if `TELEGRAM_BOT_TOKEN` is set, so the MCP serv
 - **Render binding**: FastMCP's built-in runner binds to `127.0.0.1`. We bypass it with `uvicorn.Config(..., host="0.0.0.0")`.
 - **Groq model**: currently `llama-3.3-70b-versatile`. Change the `MODEL` constant in `telegram_bot.py` to switch.
 
+## Nutrition data output format
+
+When presenting nutrition data to the user (meals, macros, daily logs), always:
+
+1. **Render an interactive HTML widget** using `show_widget` with:
+   - Summary metric cards: total kcal, avg daily kcal, avg daily protein, avg daily carbs, avg daily fat
+   - A Chart.js bar chart of daily calories
+   - A 3-colour macro bar under each day header (blue = carbs, green = protein, orange = fat)
+   - Day blocks grouped by meal (Breakfast / Lunch / Dinner / Snack) with coloured badges
+   - Per-item rows: food name, grams, kcal, carbs, protein, fat
+
+2. **Generate a PDF** using WeasyPrint (`pip install weasyprint --break-system-packages`) from a matching HTML file, saved to `/Users/marky/Projects/yazio/` with a descriptive filename. Present it with `mcp__cowork__present_files`.
+
+Recipes (items with `amount_g: null`) show `—` in the grams column and a small `recipe` label.
+
 ## Adding new MCP tools
 
 Add a new `@mcp.tool()` function in `mcp_server.py`. The Telegram bot picks it up automatically on next restart (tool list is fetched live from the MCP endpoint).
