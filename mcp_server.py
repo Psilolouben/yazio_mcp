@@ -257,6 +257,9 @@ def get_diet_schedule() -> dict:
     if not os.path.exists(diet_dir):
         return {"plans": [], "recipes": [], "error": "diet_plans/ directory not found"}
 
+    MAX_PLAN_CHARS   = 4000  # keep within Groq's 12k TPM free-tier limit
+    MAX_RECIPE_CHARS = 1200
+
     plans, recipes = [], []
     for fname in sorted(os.listdir(diet_dir), reverse=True):
         if not fname.endswith(".pdf"):
@@ -268,11 +271,11 @@ def get_diet_schedule() -> dict:
         except Exception as e:
             text = f"[Error reading {fname}: {e}]"
 
-        entry = {"filename": fname, "content": text}
         if fname.startswith("plano"):
-            plans.append(entry)
+            plans.append({"filename": fname, "content": text[:MAX_PLAN_CHARS]})
+            break  # only the most recent plan — older plans are irrelevant
         else:
-            recipes.append(entry)
+            recipes.append({"filename": fname, "content": text[:MAX_RECIPE_CHARS]})
 
     return {"plans": plans, "recipes": recipes}
 
