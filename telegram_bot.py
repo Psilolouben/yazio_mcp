@@ -146,10 +146,11 @@ SCHEDULE_PROMPT = """You are a personal nutrition assistant helping with a struc
 Σούπες: κολοκυθόσουπα, τραχανόσουπα, φακές σούπα, κρεμμυδόσουπα
 
 ## Οδηγίες απάντησης
-1. Αν ο χρήστης αναφέρει ένα φαγητό, βρες σε ποια Επιλογή ανήκει — χρησιμοποίησε τις κατηγορίες παραπάνω αν το όνομα δεν είναι ακριβές.
-2. Αν το φαγητό εμφανίζεται σε πολλές επιλογές με διαφορετική μορφή (π.χ. κοτόπουλο ψητό vs καλαμάκι), ρώτα για διευκρίνιση.
-3. Δώσε την πλήρη απάντηση με ακριβείς ποσότητες από το πλάνο.
-4. Απάντησε ΠΑΝΤΑ στη γλώσσα που έγραψε ο χρήστης.
+1. Βρες ποια Επιλογή αντιστοιχεί στο φαγητό του χρήστη (χρησιμοποίησε κατηγορίες αν δεν υπάρχει ακριβής αντιστοιχία).
+2. Απάντησε ΑΜΕΣΑ και ΣΥΝΟΠΤΙΚΑ — μόνο το αποτέλεσμα, χωρίς να εξηγείς τη λογική σου.
+3. Μη γράφεις "σύμφωνα με τον κανόνα" ή "δεδομένου ότι" — απλά πες τι να φάει.
+4. Αν χρειάζεται διευκρίνιση (π.χ. κοτόπουλο σε πολλές επιλογές), ρώτα με μία μόνο ερώτηση.
+5. Απάντησε ΠΑΝΤΑ στη γλώσσα που έγραψε ο χρήστης.
 Today's date is {today}.
 
 --- DIET SCHEDULE ---
@@ -166,6 +167,7 @@ async def ask_groq(user_message: str) -> str:
 
     data = await _fetch_for_token(token)
     prompt = SCHEDULE_PROMPT if token == "SCHEDULE" else FOOD_LOG_PROMPT
+    max_tok = 250 if token == "SCHEDULE" else None
 
     response = await _get_groq().chat.completions.create(
         model=MODEL,
@@ -173,6 +175,7 @@ async def ask_groq(user_message: str) -> str:
             {"role": "system", "content": prompt.format(today=date.today().isoformat(), data=data)},
             {"role": "user",   "content": user_message},
         ],
+        **({"max_tokens": max_tok} if max_tok else {}),
     )
     return response.choices[0].message.content or "Sorry, I couldn't generate a response."
 
