@@ -236,48 +236,47 @@ def get_daily_summary(days: int = 7) -> list[dict]:
 @mcp.tool()
 def get_diet_schedule() -> dict:
     """
-    Return all diet plan schedules and companion recipes from the diet_plans/ directory.
+    Return the current structured diet plan and companion recipes.
 
-    Each plan PDF contains a weekly schedule with 2 meal options (Επιλογή 1 / Επιλογή 2),
-    each covering breakfast (Πρωινό), lunch (Μεσηµεριανό) and dinner (Βραδινό).
-    Options are paired: if the user ate from Option 1 at lunch, dinner is also Option 1.
+    The plan has options (Επιλογή 1, Επιλογή 2, ...) each with πρωινό, μεσημεριανό, βραδινό.
+    Options are PAIRED: if the user ate from Επιλογή 1 at one meal, all meals that day are Επιλογή 1.
 
     Use this tool to answer questions like:
     - "I had revythia for lunch, what should I have for dinner?"
-    - "What are my breakfast options this week?"
+    - "What are my breakfast options?"
     - "Show me the full schedule"
 
-    Returns:
-        plans: list of {filename, content} — diet plan PDFs, newest first
-        recipes: list of {filename, content} — companion recipe PDFs
+    Returns the structured plan (from current_plan.json) plus recipe summaries.
     """
-    import pdfplumber
+    import json, pdfplumber
 
     diet_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diet_plans")
     if not os.path.exists(diet_dir):
-        return {"plans": [], "recipes": [], "error": "diet_plans/ directory not found"}
+        return {"error": "diet_plans/ directory not found"}
 
-    MAX_PLAN_CHARS   = 4000  # keep within Groq's 12k TPM free-tier limit
-    MAX_RECIPE_CHARS = 1200
+    # Prefer structured JSON over raw PDF (PDF columns are garbled when parsed as text)
+    json_path = os.path.join(diet_dir, "current_plan.json")
+    if os.path.exists(json_path):
+        with open(json_path, encoding="utf-8") as f:
+            plan = json.load(f)
+    else:
+        plan = {"error": "current_plan.json not found — please create it from the latest PDF"}
 
-    plans, recipes = [], []
-    for fname in sorted(os.listdir(diet_dir), reverse=True):
-        if not fname.endswith(".pdf"):
+    # Load recipe summaries (truncated to save tokens)
+    MAX_RECIPE_CHARS = 800
+    recipes = []
+    for fname in sorted(os.listdir(diet_dir)):
+        if not fname.endswith(".pdf") or fname.startswith("plano"):
             continue
         path = os.path.join(diet_dir, fname)
         try:
             with pdfplumber.open(path) as pdf:
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        except Exception as e:
-            text = f"[Error reading {fname}: {e}]"
-
-        if fname.startswith("plano"):
-            plans.append({"filename": fname, "content": text[:MAX_PLAN_CHARS]})
-            break  # only the most recent plan — older plans are irrelevant
-        else:
             recipes.append({"filename": fname, "content": text[:MAX_RECIPE_CHARS]})
+        except Exception as e:
+            recipes.append({"filename": fname, "error": str(e)})
 
-    return {"plans": plans, "recipes": recipes}
+    return {"plan": plan, "recipes": recipes}
 
 
 @mcp.tool()
