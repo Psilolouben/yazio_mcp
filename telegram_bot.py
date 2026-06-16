@@ -122,6 +122,7 @@ async def _fetch_for_token(token: str) -> str:
 
 FOOD_LOG_PROMPT = """You are a personal nutrition assistant.
 Answer the user's question using only the data below. Be concise.
+Always reply in the same language the user wrote in.
 Today's date is {today}.
 
 --- NUTRITION DATA ---
@@ -134,6 +135,7 @@ if the user ate from Option 1 at one meal, their other meals that day are also f
 
 Use the schedule data below to answer the user's question.
 Be specific: name the exact foods and quantities from the plan.
+Always reply in the same language the user wrote in.
 Today's date is {today}.
 
 --- DIET SCHEDULE ---
