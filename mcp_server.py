@@ -233,51 +233,6 @@ def get_daily_summary(days: int = 7) -> list[dict]:
     return summaries
 
 
-@mcp.tool()
-def get_diet_schedule() -> dict:
-    """
-    Return the current structured diet plan and companion recipes.
-
-    The plan has options (Επιλογή 1, Επιλογή 2, ...) each with πρωινό, μεσημεριανό, βραδινό.
-    Options are PAIRED: if the user ate from Επιλογή 1 at one meal, all meals that day are Επιλογή 1.
-
-    Use this tool to answer questions like:
-    - "I had revythia for lunch, what should I have for dinner?"
-    - "What are my breakfast options?"
-    - "Show me the full schedule"
-
-    Returns the structured plan (from current_plan.json) plus recipe summaries.
-    """
-    import json, pdfplumber
-
-    diet_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diet_plans")
-    if not os.path.exists(diet_dir):
-        return {"error": "diet_plans/ directory not found"}
-
-    # Prefer structured JSON over raw PDF (PDF columns are garbled when parsed as text)
-    json_path = os.path.join(diet_dir, "current_plan.json")
-    if os.path.exists(json_path):
-        with open(json_path, encoding="utf-8") as f:
-            plan = json.load(f)
-    else:
-        plan = {"error": "current_plan.json not found — please create it from the latest PDF"}
-
-    # Load recipe summaries (truncated to save tokens)
-    MAX_RECIPE_CHARS = 800
-    recipes = []
-    for fname in sorted(os.listdir(diet_dir)):
-        if not fname.endswith(".pdf") or fname.startswith("plano"):
-            continue
-        path = os.path.join(diet_dir, fname)
-        try:
-            with pdfplumber.open(path) as pdf:
-                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-            recipes.append({"filename": fname, "content": text[:MAX_RECIPE_CHARS]})
-        except Exception as e:
-            recipes.append({"filename": fname, "error": str(e)})
-
-    return {"plan": plan, "recipes": recipes}
-
 
 @mcp.tool()
 def get_today_meals() -> list[dict]:

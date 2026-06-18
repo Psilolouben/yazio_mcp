@@ -44,7 +44,7 @@ async def _call_tool(name: str, inputs: dict) -> str:
             return result.content[0].text if result.content else "{}"
 
 
-# ── Date extraction ───────────────────────────────────────────────────────────
+# ── Classification ────────────────────────────────────────────────────────────
 
 CLASSIFY_PROMPT = """Classify the user's nutrition question. Today is {today}.
 
@@ -53,29 +53,12 @@ Reply with EXACTLY one token:
 - YESTERDAY                        → asking about yesterday's food log
 - DATE:YYYY-MM-DD                  → asking about a specific logged date
 - RANGE:YYYY-MM-DD:YYYY-MM-DD      → asking about a logged date range
-- SCHEDULE                         → asking about the diet plan / schedule (what to eat, meal options, recipes, "what should I have for dinner/lunch/breakfast", "what are my options", anything about the plan)
 - UNCLEAR                          → genuinely cannot determine
 
 No explanation, just the token."""
 
 
-_SCHEDULE_KEYWORDS = [
-    # English
-    "schedule", "plan", "option", "propose", "suggest", "recommend",
-    "what should i", "what to eat", "what can i eat", "what do i eat",
-    "for dinner", "for lunch", "for breakfast", "dinner tonight", "lunch today",
-    "recipe",
-    # Greek
-    "πλάνο", "πρόγραμμα", "επιλογή", "πρωινό", "μεσημεριανό", "βραδινό",
-    "τι να φάω", "τι να τρώω", "τι έχω", "συνταγή", "πρόταση",
-]
-
-
 async def _classify(user_message: str) -> str:
-    msg = user_message.lower()
-    if any(kw in msg for kw in _SCHEDULE_KEYWORDS):
-        return "SCHEDULE"
-
     today = date.today().isoformat()
     response = await _get_groq().chat.completions.create(
         model=MODEL,
@@ -111,10 +94,6 @@ async def _fetch_for_token(token: str) -> str:
         summary = await _call_tool("get_daily_summary", {"days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1})
         return f"Meals from {start} to {end}:\n{data}\n\nDaily summaries:\n{summary}"
 
-    if token == "SCHEDULE":
-        data = await _call_tool("get_diet_schedule", {})
-        return f"Diet schedule data:\n{data}"
-
     return ""
 
 
@@ -129,53 +108,22 @@ Today's date is {today}.
 {data}
 ---------------------"""
 
-SCHEDULE_PROMPT = """You are a personal nutrition assistant helping with a structured diet plan.
-
-## Κανόνας αντιστοίχισης επιλογών
-Οι επιλογές είναι ΖΕΥΓΑΡΩΤΕΣ: αν ο χρήστης έφαγε από Επιλογή 1 σε ένα γεύμα,
-ΟΛΑ τα γεύματα της ημέρας είναι από Επιλογή 1.
-
-## Κατηγορίες τροφίμων (για αναγνώριση επιλογής)
-Όσπρια: ρεβύθια, φακές, γίγαντες, μαυρομάτικα, αρακάς, ρεβιβάδα, φασόλια
-  ⚠️  ρεβύθια (plain / σαλάτα / βραστά) ≠ ρεβιθόπιτα (ψητή πίτα) — διαφορετικά πιάτα
-Κρέας / Πουλερικά: κοτόπουλο (ψητό, καλαμάκι, μακαρονοσαλάτα), μοσχάρι, αρνί
-Ψάρι / Θαλασσινά: σολομός, λαβράκι, τόνος, γαρίδες
-Αυγά: αυγά βραστά, shakshuka, ομελέτα, αυγά μάτια
-Ζυμαρικά / Δημητριακά: μακαρόνια, ζυμαρικά, ρύζι, ριζότο, τραχανάς
-Λαδερά: αρακάς λαδερός, φασολάκια, μπάμιες, κολοκύθα, μελιτζάνες
-Σούπες: κολοκυθόσουπα, τραχανόσουπα, φακές σούπα, κρεμμυδόσουπα
-
-## Οδηγίες απάντησης
-1. Βρες ποια Επιλογή αντιστοιχεί στο φαγητό του χρήστη (χρησιμοποίησε κατηγορίες αν δεν υπάρχει ακριβής αντιστοιχία).
-2. Απάντησε ΑΜΕΣΑ και ΣΥΝΟΠΤΙΚΑ — μόνο το αποτέλεσμα, χωρίς να εξηγείς τη λογική σου.
-3. Μη γράφεις "σύμφωνα με τον κανόνα" ή "δεδομένου ότι" — απλά πες τι να φάει.
-4. Αν χρειάζεται διευκρίνιση (π.χ. κοτόπουλο σε πολλές επιλογές), ρώτα με μία μόνο ερώτηση.
-5. Απάντησε ΠΑΝΤΑ στη γλώσσα που έγραψε ο χρήστης.
-Today's date is {today}.
-
---- DIET SCHEDULE ---
-{data}
---------------------"""
-
 
 async def ask_groq(user_message: str) -> str:
     token = await _classify(user_message)
     logging.info("Classification token: %s", token)
 
     if token == "UNCLEAR":
-        return "I'm not sure what you're asking about. Try asking about a specific date (e.g. 'what did I eat yesterday?') or your diet plan (e.g. 'what should I have for dinner?')."
+        return "I'm not sure what you're asking about. Try asking about a specific date, e.g. 'what did I eat yesterday?' or 'show me June 10'."
 
     data = await _fetch_for_token(token)
-    prompt = SCHEDULE_PROMPT if token == "SCHEDULE" else FOOD_LOG_PROMPT
-    max_tok = 250 if token == "SCHEDULE" else None
 
     response = await _get_groq().chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": prompt.format(today=date.today().isoformat(), data=data)},
+            {"role": "system", "content": FOOD_LOG_PROMPT.format(today=date.today().isoformat(), data=data)},
             {"role": "user",   "content": user_message},
         ],
-        **({"max_tokens": max_tok} if max_tok else {}),
     )
     return response.choices[0].message.content or "Sorry, I couldn't generate a response."
 
