@@ -24,9 +24,11 @@ Add to Claude Desktop (remote):
     }
 """
 
+import json
 import os
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 try:
     import requests
@@ -232,6 +234,43 @@ def get_daily_summary(days: int = 7) -> list[dict]:
 
     return summaries
 
+
+
+@mcp.tool()
+def get_diet_schedule(query: str = "") -> dict:
+    """
+    Return diet plan options from Mary's diet schedule (diet_options.json).
+
+    Use this to answer questions like:
+    - "what should I eat today / for lunch / for dinner?"
+    - "which option has φακές / κοκκινιστό / λαυράκι?"
+    - "what are the quantities for Επιλ.3?"
+    - "what is the dinner for option 5?"
+
+    Args:
+        query: Optional keyword to filter options (e.g. "φακές", "λαυράκι", "κοκκινιστό").
+               If empty, returns all options.
+
+    Returns a dict with "total" count and "options" list. Each option has:
+    id, plan_date, source, option_number, πρωινό, μεσημεριανό, βραδινό.
+    """
+    json_path = Path(__file__).parent / "diet_options.json"
+    if not json_path.exists():
+        return {"error": "diet_options.json not found", "options": [], "total": 0}
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    options = data.get("options", [])
+
+    if query:
+        q = query.lower()
+        options = [
+            o for o in options
+            if q in o.get("πρωινό", "").lower()
+            or q in o.get("μεσημεριανό", "").lower()
+            or q in o.get("βραδινό", "").lower()
+        ]
+
+    return {"total": len(options), "options": options}
 
 
 @mcp.tool()
