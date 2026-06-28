@@ -262,13 +262,24 @@ def get_diet_schedule(query: str = "") -> dict:
     options = data.get("options", [])
 
     if query:
-        q = query.lower()
-        options = [
-            o for o in options
-            if q in o.get("πρωινό", "").lower()
-            or q in o.get("μεσημεριανό", "").lower()
-            or q in o.get("βραδινό", "").lower()
-        ]
+        # Normalize: replace micro sign (U+00B5) with Greek mu (U+03BC), lowercase
+        def norm(s: str) -> str:
+            return s.lower().replace("µ", "μ")
+
+        def match(option: dict, q: str) -> bool:
+            for meal in ("πρωινό", "μεσημεριανό", "βραδινό"):
+                if q in norm(option.get(meal, "")):
+                    return True
+            return False
+
+        q = norm(query)
+        options = [o for o in options if match(o, q)]
+
+        # Fallback: try progressively shorter stems (handles ο/ω spelling variants)
+        for stem_len in (4, 3):
+            if not options and len(q) > stem_len:
+                stem = q[:stem_len]
+                options = [o for o in data.get("options", []) if match(o, stem)]
 
     return {"total": len(options), "options": options}
 
