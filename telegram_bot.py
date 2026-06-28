@@ -53,6 +53,7 @@ Reply with EXACTLY one token:
 - YESTERDAY                        → asking about yesterday's food log
 - DATE:YYYY-MM-DD                  → asking about a specific logged date
 - RANGE:YYYY-MM-DD:YYYY-MM-DD      → asking about a logged date range
+- DIET_SCHEDULE:<keyword>          → asking about the diet plan / what to eat / Mary's schedule / a specific meal option or ingredient (e.g. DIET_SCHEDULE:φακές, DIET_SCHEDULE:λαυράκι, DIET_SCHEDULE: for all options)
 - UNCLEAR                          → genuinely cannot determine
 
 No explanation, just the token."""
@@ -94,19 +95,26 @@ async def _fetch_for_token(token: str) -> str:
         summary = await _call_tool("get_daily_summary", {"days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1})
         return f"Meals from {start} to {end}:\n{data}\n\nDaily summaries:\n{summary}"
 
+    if token.startswith("DIET_SCHEDULE:"):
+        keyword = token[len("DIET_SCHEDULE:"):].strip()
+        data = await _call_tool("get_diet_schedule", {"query": keyword})
+        return f"Diet schedule options (query='{keyword}'):\n{data}"
+
     return ""
 
 
 # ── Answer ────────────────────────────────────────────────────────────────────
 
-FOOD_LOG_PROMPT = """You are a personal nutrition assistant.
+FOOD_LOG_PROMPT = """You are a personal nutrition assistant for Marky.
 Answer the user's question using only the data below. Be concise.
 Always reply in the same language the user wrote in.
 Today's date is {today}.
 
---- NUTRITION DATA ---
+For diet schedule questions, present the relevant options clearly: show the option number, source plan, and the meals (πρωινό/μεσημεριανό/βραδινό). Include quantities if mentioned in the data.
+
+--- DATA ---
 {data}
----------------------"""
+-----------"""
 
 
 async def ask_groq(user_message: str) -> str:
