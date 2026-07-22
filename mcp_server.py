@@ -75,9 +75,9 @@ def _authenticate(email: str, password: str) -> requests.Session:
     return s
 
 
-def _get_session() -> requests.Session:
+def _get_session(force_refresh: bool = False) -> requests.Session:
     global _session
-    if _session is None:
+    if _session is None or force_refresh:
         email    = os.environ.get("YAZIO_EMAIL", "")
         password = os.environ.get("YAZIO_PASSWORD", "")
         if not email or not password:
@@ -86,18 +86,25 @@ def _get_session() -> requests.Session:
     return _session
 
 
+def _api_get(url: str, **kwargs) -> requests.Response:
+    """GET with automatic re-auth on a 401 (expired token)."""
+    resp = _get_session().get(url, timeout=15, **kwargs)
+    if resp.status_code == 401:
+        resp = _get_session(force_refresh=True).get(url, timeout=15, **kwargs)
+    resp.raise_for_status()
+    return resp
+
+
 # ── Low-level fetchers ────────────────────────────────────────────────────────
 
 def _consumed_items(day: date) -> dict:
-    resp = _get_session().get(f"{API_URL}/user/consumed-items", params={"date": day.isoformat()}, timeout=15)
-    resp.raise_for_status()
+    resp = _api_get(f"{API_URL}/user/consumed-items", params={"date": day.isoformat()})
     return resp.json()
 
 
 def _product(product_id: str) -> dict:
     if product_id not in _product_cache:
-        resp = _get_session().get(f"{API_URL}/products/{product_id}", timeout=15)
-        resp.raise_for_status()
+        resp = _api_get(f"{API_URL}/products/{product_id}")
         _product_cache[product_id] = resp.json()
     return _product_cache[product_id]
 
@@ -105,8 +112,7 @@ def _product(product_id: str) -> dict:
 def _recipe(recipe_id: str) -> dict:
     key = f"recipe_{recipe_id}"
     if key not in _product_cache:
-        resp = _get_session().get(f"{API_URL}/recipes/{recipe_id}", timeout=15)
-        resp.raise_for_status()
+        resp = _api_get(f"{API_URL}/recipes/{recipe_id}")
         _product_cache[key] = resp.json()
     return _product_cache[key]
 
