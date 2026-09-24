@@ -117,6 +117,41 @@ def _recipe(recipe_id: str) -> dict:
     return _product_cache[key]
 
 
+def _exercise_for_day(day: date) -> dict:
+    """Return exercise/activity data for a day (training sessions + passive activity,
+    e.g. synced in from Apple Health)."""
+    resp = _api_get(f"{API_URL}/user/exercises", params={"date": day.isoformat()})
+    data = resp.json()
+
+    training = data.get("training", []) or []
+    custom_training = data.get("custom_training", []) or []
+    activity = data.get("activity", {}) or {}
+
+    def _entry_energy(e: dict) -> float:
+        return float(e.get("energy") or e.get("calories") or e.get("energy_kcal") or 0)
+
+    def _entry_name(e: dict) -> str:
+        return e.get("name") or e.get("title") or e.get("type") or e.get("exercise") or "training"
+
+    sessions = [
+        {"name": _entry_name(e), "calories_kcal": round(_entry_energy(e), 1)}
+        for e in (*training, *custom_training)
+    ]
+
+    activity_kcal = round(float(activity.get("energy") or 0), 1)
+    total_kcal = round(sum(s["calories_kcal"] for s in sessions) + activity_kcal, 1)
+
+    return {
+        "date":               day.isoformat(),
+        "total_exercise_kcal": total_kcal,
+        "activity_kcal":      activity_kcal,
+        "activity_steps":     activity.get("steps"),
+        "activity_distance_m": activity.get("distance"),
+        "activity_source":    activity.get("gateway"),
+        "sessions":           sessions,
+    }
+
+
 def _process_day(day: date) -> list[dict]:
     """Return a list of meal-item dicts for the given day."""
     data = _consumed_items(day)
@@ -299,6 +334,51 @@ def get_today_meals() -> list[dict]:
     carbs_g, protein_g, fat_g, notes.
     """
     return _process_day(date.today())
+
+
+@mcp.tool()
+def get_exercise_for_date(date: str = "") -> dict:
+    """
+    Return exercise/activity data logged in YAZIO for a specific date, including
+    workouts synced in from Apple Health (or other connected apps/devices) as well
+    as structured training sessions logged manually or via connected apps.
+
+    Args:
+        date: Date in YYYY-MM-DD format (e.g. "2026-09-24"). Defaults to today if omitted.
+
+    Returns a dict with: date, total_exercise_kcal, activity_kcal (passive movement,
+    e.g. steps), activity_steps, activity_distance_m, activity_source (e.g.
+    "apple_health"), and sessions (list of {name, calories_kcal} for named workouts).
+    """
+    from datetime import date as date_type
+    d = date_type.fromisoformat(date) if date else date_type.today()
+    return _exercise_for_day(d)
+
+
+@mcp.tool()
+def get_exercise_for_range(start_date: str, end_date: str) -> list[dict]:
+    """
+    Return exercise/activity data logged in YAZIO between two dates (inclusive),
+    including workouts synced in from Apple Health.
+
+    Args:
+        start_date: Start date in YYYY-MM-DD format.
+        end_date:   End date in YYYY-MM-DD format.
+
+    Returns a list of per-day dicts (same shape as get_exercise_for_date), one per day.
+    """
+    from datetime import date as date_type
+    start = date_type.fromisoformat(start_date)
+    end   = date_type.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("end_date must be >= start_date")
+
+    results = []
+    current = start
+    while current <= end:
+        results.append(_exercise_for_day(current))
+        current += timedelta(days=1)
+    return results
 
 
 if __name__ == "__main__":
